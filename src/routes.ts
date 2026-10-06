@@ -14,6 +14,10 @@ export type ApiConfig = {
   /** Credential check used by /api/login and the auth middleware; defaults
    *  to users.yaml-based checkCredentials (see auth.ts). */
   checkCredentials?: (login: string, password: string) => Promise<boolean>;
+  /** serverImpl keys served WITHOUT requiring authentication; the handler's
+   *  first argument is the authenticated login name ("" when anonymous),
+   *  so handlers can degrade gracefully or reject writes themselves. */
+  anonymous?: string[];
 };
 
 const unauthorized = (res: Response) => {
@@ -32,10 +36,39 @@ export const basicAuth = (req: Request, res: Response, next: NextFunction) => {
   })();
 };
 
+/** JSON dispatch for one ServerApi method: POST {apiPath}/key calls the
+ *  implementation with the deserialized body array as positional args;
+ *  when `withUser` the first argument is the authenticated login (""). */
+const dispatch = (
+  fn: (...args: unknown[]) => unknown,
+  check: ApiConfig["checkCredentials"],
+  withUser: boolean,
+) =>
+  async (req: Request, res: Response) => {
+    const reqParams = (req as Request & { body?: unknown[] }).body ?? [];
+    try {
+      const result = withUser
+        ? await (async () => {
+            const credentials = parseBasicHeader(req.headers.authorization);
+            const user =
+              credentials && check && (await check(credentials.login, credentials.password))
+                ? credentials.login
+                : "";
+            return fn(user, ...reqParams);
+          })()
+        : await fn(...reqParams);
+      res.json(result);
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
 /** Wire logger + login route + auth middleware + API dispatch onto app. */
 export const configureApi = (
   app: Server,
-  { serverImpl, checkCredentials: check = checkCredentials }: ApiConfig,
+  { serverImpl, checkCredentials: check = checkCredentials, anonymous = [] }: ApiConfig,
 ) => {
   // @ts-ignore — express.json() is typed as RequestHandler on Application
   app.use(express.json());
@@ -55,21 +88,17 @@ export const configureApi = (
 
   // stash the check for the middleware (app.locals is typed loosely)
   (app.locals as Record<string, unknown>).checkCredentials = check;
-  app.use(apiPath, basicAuth);
 
-  const routes = Router();
+  // Anonymous-allowed keys are mounted before the auth middleware; the rest
+  // sit behind it.
+  const anonRoutes = Router();
+  const protectedRoutes = Router();
   Object.entries(serverImpl).forEach(([key, fn]) => {
-    routes.post(`/${key}`, async (req: Request, res: Response) => {
-      try {
-        const reqParams = (req as Request & { body?: unknown[] }).body ?? [];
-        const result = await (fn as (...a: unknown[]) => unknown)(...reqParams);
-        res.json(result);
-      } catch (err) {
-        res
-          .status(500)
-          .json({ error: err instanceof Error ? err.message : String(err) });
-      }
-    });
+    const handler = dispatch(fn as (...a: unknown[]) => unknown, check, anonymous.includes(key));
+    (anonymous.includes(key) ? anonRoutes : protectedRoutes)
+      .post(`/${key}`, handler);
   });
-  app.use(apiPath, routes);
+  app.use(apiPath, anonRoutes);
+  app.use(apiPath, basicAuth);
+  app.use(apiPath, protectedRoutes);
 };
