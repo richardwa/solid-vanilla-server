@@ -1,0 +1,21 @@
+{
+  "name": "solid-vanilla-server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "format": "bun x prettier -w *.json ./src",
+    "prebuild": "bun run format",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/express": "types/express",
+    "prettier": "^3.9.6",
+    "typescript": "7"
+  }
+}
